@@ -1,24 +1,23 @@
 package main
 
 import (
-	"time"
 	"encoding/csv"
 	"fmt"
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/antchfx/htmlquery"
-	"github.com/gocarina/gocsv"
 	"github.com/op/go-logging"
 	"golang.org/x/net/html"
 )
 
 const (
 	tabletkiATCURL = "https://tabletki.ua/atc/"
+	logLevel       = "INFO"
 	workersNum     = 20
 	csvFileName    = "tabletki.csv"
-	logLevel       = "INFO"
 )
 
 var log *logging.Logger
@@ -41,15 +40,31 @@ type DrugInfo struct {
 
 // Drug struct contains all nececarry information about the drug
 type Drug struct {
-	Name         string `csv:"name"`
-	Link         string `csv:"link"`
-	Dosage       string `csv:"dosage"`
-	Manufacture  string `csv:"manufacture"`
-	INN          string `csv:"INN"`
-	PharmGroup   string `csv:"pharm_group"`
-	Registration string `csv:"registration"`
-	ATCCode      string `csv:"ATC_code"`
-	Instruction  string `csv:"instruction"`
+	Name         string
+	Link         string
+	Dosage       string
+	Manufacture  string
+	INN          string
+	PharmGroup   string
+	Registration string
+	ATCCode      string
+	Instruction  string
+}
+
+var drugFields = []string{
+	"Name", "Link", "Dosage", "Manufacture", "INN",
+	"PharmGroup", "Registration", "ATCCode", "Instruction"}
+
+// Fields return list of the Drug field names
+func (d *Drug) Fields() []string {
+	return drugFields
+}
+
+// Values return list of the Drug field values
+func (d *Drug) Values() []string {
+	return []string{
+		d.Name, d.Link, d.Dosage, d.Manufacture, d.INN,
+		d.PharmGroup, d.Registration, d.ATCCode, d.Instruction}
 }
 
 func htmlText(baseNode *html.Node, xpath string) string {
@@ -150,19 +165,26 @@ func checkError(err error) bool {
 	return false
 }
 
-func saveToCSV(fileName string, drugsChan <-chan interface{}) {
+func saveToCSV(drugsChan <-chan *Drug, fileName string) {
 	file, err := os.OpenFile(
 		csvFileName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.ModePerm)
 	checkFatalError(err)
 	defer file.Close()
 
-	csvWriter := gocsv.NewSafeCSVWriter(csv.NewWriter(file))
-	err = gocsv.MarshalChan(drugsChan, csvWriter)
+	writer := csv.NewWriter(file)
+	defer writer.Flush()
+
+	// skip Instruction because it too long
+	rowLen := len(drugFields) - 1
+
+	// write CSV headers
+	err = writer.Write(drugFields[:rowLen])
 	checkFatalError(err)
 
-	csvWriter.Flush()
-	err = csvWriter.Error()
-	checkFatalError(err)
+	for drug := range drugsChan {
+		err = writer.Write(drug.Values()[:rowLen])
+		checkFatalError(err)
+	}
 }
 
 func scan() {
@@ -185,7 +207,7 @@ func scan() {
 			if checkError(err) {
 				continue
 			}
-			
+
 			log.Infof("Collected %d drugs names from %s", len(drugInfos), link)
 			for _, drugInfo := range drugInfos {
 				drugInChanel <- drugInfo
@@ -194,7 +216,7 @@ func scan() {
 	}()
 
 	// Extract drug information
-	drugOutChanel := make(chan interface{})
+	drugOutChanel := make(chan *Drug)
 
 	go func() {
 		var wg sync.WaitGroup
@@ -204,7 +226,7 @@ func scan() {
 		defer close(drugOutChanel)
 
 		log.Info("Loading drug pages")
-		
+
 		counter := 0
 		for drugInfo := range drugInChanel {
 			wg.Add(1)
@@ -220,13 +242,13 @@ func scan() {
 				drug, err := fetchDrug(di)
 				if err != nil {
 					log.Errorf(
-						"Error loading drug \"%s\" (%s): %s", 
+						"Error loading drug \"%s\" (%s): %s",
 						di.Name, di.Link, err)
 					return
 				}
-				
-				counter ++
-				if counter % 100 == 0 {
+
+				counter++
+				if counter%100 == 0 {
 					log.Infof("Scanned %d drugs", counter)
 				}
 
@@ -240,13 +262,12 @@ func scan() {
 
 	// Save drugs in CSV file
 	log.Infof("Save drugs to CSV %s", csvFileName)
-	saveToCSV(csvFileName, drugOutChanel)
+	saveToCSV(drugOutChanel, csvFileName)
 }
-
 
 func main() {
 	start := time.Now()
-	
+
 	initLogger(logLevel)
 	log.Info("Starting drugs scan")
 
