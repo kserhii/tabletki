@@ -1,5 +1,4 @@
 github.com/antchfx/htmlquery
-github.com/denisenkom/go-mssqldb
-github.com/gocarina/gocsv
 github.com/op/go-logging
 golang.org/x/net/html
+github.com/denisenkom/go-mssqldb

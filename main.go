@@ -297,8 +297,9 @@ func scan() {
 		for drugInfo := range drugInChanel {
 			wg.Add(1)
 			semaphore <- struct{}{}
+			counter++
 
-			go func(di *DrugInfo) {
+			go func(di *DrugInfo, num int) {
 				defer func() {
 					<-semaphore
 					wg.Done()
@@ -313,12 +314,12 @@ func scan() {
 					return
 				}
 
-				if counter%100 == 0 {
-					log.Infof("Scanned %d drugs", counter)
+				if num%100 == 0 {
+					log.Infof("Scanned %d drugs", num)
 				}
 
 				drugOutChanel <- drug
-			}(drugInfo)
+			}(drugInfo, counter)
 		}
 
 		wg.Wait()
