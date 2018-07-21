@@ -1,6 +1,7 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/csv"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/antchfx/htmlquery"
+	_ "github.com/denisenkom/go-mssqldb"
 	"github.com/op/go-logging"
 	"golang.org/x/net/html"
 )
@@ -30,6 +32,22 @@ func initLogger(level string) {
 		logLev = logging.INFO
 	}
 	logging.SetLevel(logLev, module)
+}
+
+// DBConf is database credentials storage
+type DBConf struct {
+	Server   string
+	Port     int
+	User     string
+	Password string
+	Database string
+}
+
+// ConnString return GO SQL connection string to Open
+func (dbc *DBConf) ConnString() string {
+	return fmt.Sprintf(
+		"server=%s;port=%d;user id=%s;password=%s;database=%s",
+		dbc.Server, dbc.Port, dbc.User, dbc.Password, dbc.Database)
 }
 
 // DrugInfo contains drug name and link to the drug page
@@ -56,15 +74,15 @@ var drugFields = []string{
 	"PharmGroup", "Registration", "ATCCode", "Instruction"}
 
 // Fields return list of the Drug field names
-func (d *Drug) Fields() []string {
+func (drug *Drug) Fields() []string {
 	return drugFields
 }
 
 // Values return list of the Drug field values
-func (d *Drug) Values() []string {
+func (drug *Drug) Values() []string {
 	return []string{
-		d.Name, d.Link, d.Dosage, d.Manufacture, d.INN,
-		d.PharmGroup, d.Registration, d.ATCCode, d.Instruction}
+		drug.Name, drug.Link, drug.Dosage, drug.Manufacture, drug.INN,
+		drug.PharmGroup, drug.Registration, drug.ATCCode, drug.Instruction}
 }
 
 func htmlText(baseNode *html.Node, xpath string) string {
@@ -187,6 +205,54 @@ func saveToCSV(drugsChan <-chan *Drug, fileName string) {
 	}
 }
 
+func saveToMSSQL(drugsChan <-chan *Drug, dbc DBConf) int {
+	db, err := sql.Open("sqlserver", dbc.ConnString())
+	checkFatalError(err)
+	defer db.Close()
+
+	err = db.Ping()
+	checkFatalError(err)
+
+	_, err = db.Exec("USE drugs")
+	checkFatalError(err)
+
+	_, err = db.Exec("TRUNCATE TABLE Drugs")
+	checkFatalError(err)
+
+	totalCount := 0
+	insertQuery := "INSERT INTO Drugs VALUES (@p1, @p2, @p3, @p4, @p5, @p6, @p7, @p8, @p9)"
+
+	batchCount := 0
+	tx, err := db.Begin()
+
+	for drug := range drugsChan {
+		_, err = tx.Exec(insertQuery,
+			drug.Name, drug.Link, drug.Dosage, drug.Manufacture, drug.INN,
+			drug.PharmGroup, drug.Registration, drug.ATCCode, drug.Instruction)
+		if err != nil {
+			tx.Rollback()
+			log.Fatal(err)
+		}
+
+		batchCount++
+		if batchCount%100 == 0 {
+			err = tx.Commit()
+			checkFatalError(err)
+			totalCount += batchCount
+			batchCount = 0
+			tx, err = db.Begin()
+		}
+	}
+
+	if batchCount > 0 {
+		err = tx.Commit()
+		checkFatalError(err)
+		totalCount += batchCount
+	}
+
+	return totalCount
+}
+
 func scan() {
 	// Extract root ATC links
 	log.Infof("Extract root ATC links from %s", tabletkiATCURL)
@@ -247,7 +313,6 @@ func scan() {
 					return
 				}
 
-				counter++
 				if counter%100 == 0 {
 					log.Infof("Scanned %d drugs", counter)
 				}
@@ -261,8 +326,16 @@ func scan() {
 	}()
 
 	// Save drugs in CSV file
-	log.Infof("Save drugs to CSV %s", csvFileName)
-	saveToCSV(drugOutChanel, csvFileName)
+	// log.Infof("Save drugs to CSV %s", csvFileName)
+	// saveToCSV(drugOutChanel, csvFileName)
+
+	dbc := DBConf{
+		Server: "localhost", Port: 1433,
+		User: "root", Password: "123",
+		Database: "drugs"}
+	log.Infof("Save drugs to MSSQL %s:%d", dbc.Server, dbc.Port)
+	totalRowsSaved := saveToMSSQL(drugOutChanel, dbc)
+	log.Infof("Saved %d drugs to MSSQL %s:%d", totalRowsSaved, dbc.Server, dbc.Port)
 }
 
 func main() {
