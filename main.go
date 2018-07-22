@@ -18,9 +18,23 @@ import (
 const (
 	tabletkiATCURL = "https://tabletki.ua/atc/"
 	logLevel       = "INFO"
-	workersNum     = 20
-	csvFileName    = "tabletki.csv"
 )
+
+// Config is project settings storage
+type Config struct {
+	Debug        bool
+	WorkersNum   int
+	CSVFileName  string
+	MSSQLConnURL string
+}
+
+func getConfig() Config {
+	return Config{
+		Debug:        true,
+		WorkersNum:   20,
+		CSVFileName:  "tabletki.csv",
+		MSSQLConnURL: "sqlserver://user:pass@localhost:1433?database=drugs&connection+timeout=30"}
+}
 
 var log *logging.Logger
 
@@ -32,22 +46,6 @@ func initLogger(level string) {
 		logLev = logging.INFO
 	}
 	logging.SetLevel(logLev, module)
-}
-
-// DBConf is database credentials storage
-type DBConf struct {
-	Server   string
-	Port     int
-	User     string
-	Password string
-	Database string
-}
-
-// ConnString return GO SQL connection string to Open
-func (dbc *DBConf) ConnString() string {
-	return fmt.Sprintf(
-		"server=%s;port=%d;user id=%s;password=%s;database=%s",
-		dbc.Server, dbc.Port, dbc.User, dbc.Password, dbc.Database)
 }
 
 // DrugInfo contains drug name and link to the drug page
@@ -185,7 +183,7 @@ func checkError(err error) bool {
 
 func saveToCSV(drugsChan <-chan *Drug, fileName string) {
 	file, err := os.OpenFile(
-		csvFileName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.ModePerm)
+		fileName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.ModePerm)
 	checkFatalError(err)
 	defer file.Close()
 
@@ -205,8 +203,8 @@ func saveToCSV(drugsChan <-chan *Drug, fileName string) {
 	}
 }
 
-func saveToMSSQL(drugsChan <-chan *Drug, dbc DBConf) int {
-	db, err := sql.Open("sqlserver", dbc.ConnString())
+func saveToMSSQL(drugsChan <-chan *Drug, mssqlConnURL string) int {
+	db, err := sql.Open("sqlserver", mssqlConnURL)
 	checkFatalError(err)
 	defer db.Close()
 
@@ -253,7 +251,7 @@ func saveToMSSQL(drugsChan <-chan *Drug, dbc DBConf) int {
 	return totalCount
 }
 
-func scan() {
+func scan(cnf Config) {
 	// Extract root ATC links
 	log.Infof("Extract root ATC links from %s", tabletkiATCURL)
 
@@ -286,7 +284,7 @@ func scan() {
 
 	go func() {
 		var wg sync.WaitGroup
-		semaphore := make(chan struct{}, workersNum)
+		semaphore := make(chan struct{}, cnf.WorkersNum)
 		defer close(semaphore)
 
 		defer close(drugOutChanel)
@@ -326,17 +324,16 @@ func scan() {
 		log.Infof("Scanned %d drugs", counter)
 	}()
 
-	// Save drugs in CSV file
-	// log.Infof("Save drugs to CSV %s", csvFileName)
-	// saveToCSV(drugOutChanel, csvFileName)
-
-	dbc := DBConf{
-		Server: "localhost", Port: 1433,
-		User: "root", Password: "123",
-		Database: "drugs"}
-	log.Infof("Save drugs to MSSQL %s:%d", dbc.Server, dbc.Port)
-	totalRowsSaved := saveToMSSQL(drugOutChanel, dbc)
-	log.Infof("Saved %d drugs to MSSQL %s:%d", totalRowsSaved, dbc.Server, dbc.Port)
+	if cnf.Debug {
+		// Save drugs in CSV file
+		log.Infof("Save drugs to CSV %s", cnf.CSVFileName)
+		saveToCSV(drugOutChanel, cnf.CSVFileName)
+	} else {
+		// Save drugs in MSSQL database
+		log.Info("Save drugs to MSSQL")
+		totalRowsSaved := saveToMSSQL(drugOutChanel, cnf.MSSQLConnURL)
+		log.Infof("Saved %d drugs to MSSQL", totalRowsSaved)
+	}
 }
 
 func main() {
@@ -345,6 +342,8 @@ func main() {
 	initLogger(logLevel)
 	log.Info("Starting drugs scan")
 
-	scan()
+	cnf := getConfig()
+	scan(cnf)
+
 	log.Infof("Done in %s", time.Since(start))
 }
