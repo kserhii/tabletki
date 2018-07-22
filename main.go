@@ -27,6 +27,7 @@ type Config struct {
 	Prod         bool
 	WorkersNum   int
 	CSVFileName  string
+	JSONFileName string
 	MSSQLConnURL string
 }
 
@@ -35,6 +36,7 @@ func getConfig() Config {
 		Prod:         false,
 		WorkersNum:   20,
 		CSVFileName:  "tabletki.csv",
+		JSONFileName: "ATC_tree.json",
 		MSSQLConnURL: "sqlserver://user:pass@localhost:1433?database=drugs"}
 }
 
@@ -159,6 +161,40 @@ func fetchATCTree(tree *ATCTree) error {
 	return nil
 }
 
+func scanATCTree(tree *ATCTree, cnf Config) {
+	// Load ATCTree
+	log.Info("Load ATC tree recursively")
+	err := fetchATCTree(tree)
+	checkFatalError(err)
+
+	// Convert ATCTree names to json tree
+	log.Info("Convert ATC tree to JSON")
+
+	// Save results
+	if cnf.Prod {
+		// Save ATC tree MSSQL database
+		log.Info("Save ATC tree to MSSQL")
+		db, err := sql.Open("sqlserver", cnf.MSSQLConnURL)
+		checkFatalError(err)
+		defer db.Close()
+	
+		err = db.Ping()
+		checkFatalError(err)
+		_, err = db.Exec("USE drugs")
+		checkFatalError(err)
+		_, err = db.Exec("TRUNCATE TABLE ATCTree")
+		checkFatalError(err)
+	
+	} else {
+		// Save ATC tree to JSON file
+		log.Infof("Save ATC tree to JSON %s", cnf.JSONFileName)
+		file, err := os.OpenFile(
+			cnf.JSONFileName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.ModePerm)
+		checkFatalError(err)
+		defer file.Close()
+	}
+}
+
 func fetchATCLinks(url string) ([]string, error) {
 	doc, err := htmlquery.LoadURL(url)
 	if err != nil {
@@ -245,10 +281,10 @@ func saveDrugsToCSV(drugsChan <-chan *Drug, fileName string) {
 	writer := csv.NewWriter(file)
 	defer writer.Flush()
 
-	// skip Instruction because it too long
+	// Skip Instruction because it too long
 	rowLen := len(drugFields) - 1
 
-	// write CSV headers
+	// Write CSV headers
 	err = writer.Write(drugFields[:rowLen])
 	checkFatalError(err)
 
@@ -265,10 +301,8 @@ func saveDrugsToMSSQL(drugsChan <-chan *Drug, mssqlConnURL string) int {
 
 	err = db.Ping()
 	checkFatalError(err)
-
 	_, err = db.Exec("USE drugs")
 	checkFatalError(err)
-
 	_, err = db.Exec("TRUNCATE TABLE Drugs")
 	checkFatalError(err)
 
@@ -380,12 +414,12 @@ func scanDrugs(cnf Config) {
 	}()
 
 	if cnf.Prod {
-		// Save drugs in MSSQL database
+		// Save drugs to MSSQL database
 		log.Info("Save drugs to MSSQL")
 		totalRowsSaved := saveDrugsToMSSQL(drugOutChanel, cnf.MSSQLConnURL)
 		log.Infof("Saved %d drugs to MSSQL", totalRowsSaved)
 	} else {
-		// Save drugs in CSV file
+		// Save drugs to CSV file
 		log.Infof("Save drugs to CSV %s", cnf.CSVFileName)
 		saveDrugsToCSV(drugOutChanel, cnf.CSVFileName)
 	}
@@ -404,14 +438,16 @@ func main() {
 
 	flaggy.Bool(&cnf.Prod, "", "prod", "Set PRODUCTION mode (save results to MSSQL DB)")
 	flaggy.Int(&cnf.WorkersNum, "", "workers", "Number of workers to run scan in parralel")
-	flaggy.String(&cnf.CSVFileName, "", "csvfile", "Name of CSV file where save results in debug mode")
+	flaggy.String(&cnf.CSVFileName, "", "csvfile", "Name of CSV file where save drugs in debug mode")
+	flaggy.String(&cnf.JSONFileName, "", "jsonfile", "Name of JSON file where save ATC tree in debug mode")
 	flaggy.String(&cnf.MSSQLConnURL, "", "mssqlurl", "MSSQL database connection url")
 	flaggy.Parse()
 
 	log.Infof("Starting ATC classification scan (production: %t)", cnf.Prod)
-	fetchATCTree(&ATCTree{
+	tree := &ATCTree{
 		Name: "АТХ (ATC) классификация",
-		Link: tabletkiATCURL})
+		Link: tabletkiATCURL} 
+	scanATCTree(tree, cnf)
 
 	log.Infof("Starting drugs scan (production: %t, workers: %d)",
 		cnf.Prod, cnf.WorkersNum)
