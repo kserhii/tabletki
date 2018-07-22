@@ -11,18 +11,20 @@ import (
 
 	"github.com/antchfx/htmlquery"
 	_ "github.com/denisenkom/go-mssqldb"
+	"github.com/integrii/flaggy"
 	"github.com/op/go-logging"
 	"golang.org/x/net/html"
 )
 
 const (
+	version		   = "1.0.0"
 	tabletkiATCURL = "https://tabletki.ua/atc/"
 	logLevel       = "INFO"
 )
 
 // Config is project settings storage
 type Config struct {
-	Debug        bool
+	Prod        bool
 	WorkersNum   int
 	CSVFileName  string
 	MSSQLConnURL string
@@ -30,10 +32,10 @@ type Config struct {
 
 func getConfig() Config {
 	return Config{
-		Debug:        true,
+		Prod:        false,
 		WorkersNum:   20,
 		CSVFileName:  "tabletki.csv",
-		MSSQLConnURL: "sqlserver://user:pass@localhost:1433?database=drugs&connection+timeout=30"}
+		MSSQLConnURL: "sqlserver://user:pass@localhost:1433?database=drugs"}
 }
 
 var log *logging.Logger
@@ -324,25 +326,37 @@ func scan(cnf Config) {
 		log.Infof("Scanned %d drugs", counter)
 	}()
 
-	if cnf.Debug {
-		// Save drugs in CSV file
-		log.Infof("Save drugs to CSV %s", cnf.CSVFileName)
-		saveToCSV(drugOutChanel, cnf.CSVFileName)
-	} else {
+	if cnf.Prod {
 		// Save drugs in MSSQL database
 		log.Info("Save drugs to MSSQL")
 		totalRowsSaved := saveToMSSQL(drugOutChanel, cnf.MSSQLConnURL)
 		log.Infof("Saved %d drugs to MSSQL", totalRowsSaved)
+	} else {
+		// Save drugs in CSV file
+		log.Infof("Save drugs to CSV %s", cnf.CSVFileName)
+		saveToCSV(drugOutChanel, cnf.CSVFileName)
 	}
 }
 
 func main() {
 	start := time.Now()
-
-	initLogger(logLevel)
-	log.Info("Starting drugs scan")
-
 	cnf := getConfig()
+	initLogger(logLevel)
+	
+	flaggy.SetName("Tabletki.ua drugs scrapper")
+	flaggy.SetDescription(fmt.Sprintf(
+		"This programm extract and save information" + 
+		"about the drugs from the \"%s\" link.", tabletkiATCURL))
+	flaggy.SetVersion(version)
+
+	flaggy.Bool(&cnf.Prod, "", "prod", "Set PRODUCTION mode (save results to MSSQL DB)")
+	flaggy.Int(&cnf.WorkersNum, "", "workers", "Number of workers to run scan in parralel")
+	flaggy.String(&cnf.CSVFileName, "", "csvfile", "Name of CSV file where save results in debug mode")
+	flaggy.String(&cnf.MSSQLConnURL, "", "mssqlurl", "MSSQL database connection url")
+	flaggy.Parse()
+
+	log.Infof("Starting drugs scan (production: %t, workers: %d)", 
+		      cnf.Prod, cnf.WorkersNum)
 	scan(cnf)
 
 	log.Infof("Done in %s", time.Since(start))
