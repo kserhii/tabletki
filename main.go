@@ -17,14 +17,14 @@ import (
 )
 
 const (
-	version		   = "1.0.0"
+	version        = "1.0.0"
 	tabletkiATCURL = "https://tabletki.ua/atc/"
 	logLevel       = "INFO"
 )
 
 // Config is project settings storage
 type Config struct {
-	Prod        bool
+	Prod         bool
 	WorkersNum   int
 	CSVFileName  string
 	MSSQLConnURL string
@@ -32,7 +32,7 @@ type Config struct {
 
 func getConfig() Config {
 	return Config{
-		Prod:        false,
+		Prod:         false,
 		WorkersNum:   20,
 		CSVFileName:  "tabletki.csv",
 		MSSQLConnURL: "sqlserver://user:pass@localhost:1433?database=drugs"}
@@ -48,6 +48,13 @@ func initLogger(level string) {
 		logLev = logging.INFO
 	}
 	logging.SetLevel(logLev, module)
+}
+
+// ATCTree is the tree of ATC classification from the site
+type ATCTree struct {
+	Name     string
+	Link     string
+	Children []*ATCTree
 }
 
 // DrugInfo contains drug name and link to the drug page
@@ -85,12 +92,71 @@ func (drug *Drug) Values() []string {
 		drug.PharmGroup, drug.Registration, drug.ATCCode, drug.Instruction}
 }
 
+func checkFatalError(err error) {
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func checkError(err error) bool {
+	if err != nil {
+		log.Error(err)
+		return true
+	}
+	return false
+}
+
 func htmlText(baseNode *html.Node, xpath string) string {
 	node := htmlquery.FindOne(baseNode, xpath)
 	if node == nil {
 		return ""
 	}
 	return strings.TrimSpace(htmlquery.InnerText(node))
+}
+
+func fetchATCTree(tree *ATCTree) error {
+	log.Debugf("|-- %s", tree.Link)
+	doc, err := htmlquery.LoadURL(tree.Link)
+	if err != nil {
+		return fmt.Errorf("HTTP request %s error: %s", tree.Link, err)
+	}
+
+	childrenNodes := htmlquery.Find(doc, `//div[contains(@id, "ATCPanel")]/ul/li/a`)
+	numOfChildren := len(childrenNodes)
+
+	tree.Children = make([]*ATCTree, numOfChildren)
+	if numOfChildren == 0 {
+		return nil
+	}
+
+	for i, childNode := range childrenNodes {
+		tree.Children[i] = &ATCTree{
+			Name: htmlquery.SelectAttr(childNode, "title"),
+			Link: "https:" + htmlquery.SelectAttr(childNode, "href"),
+		}
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(numOfChildren)
+	res := make(chan error, numOfChildren)
+
+	for _, child := range tree.Children {
+		go func(c *ATCTree) {
+			defer wg.Done()
+			res <- fetchATCTree(c)
+		}(child)
+	}
+
+	wg.Wait()
+	close(res)
+
+	for err := range res {
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 func fetchATCLinks(url string) ([]string, error) {
@@ -127,6 +193,7 @@ func fetchDrugLinks(url string) ([]*DrugInfo, error) {
 }
 
 func fetchDrug(drugInfo *DrugInfo) (*Drug, error) {
+	log.Debugf("=> %s (%s)", drugInfo.Name, drugInfo.Link)
 	doc, err := htmlquery.LoadURL(drugInfo.Link)
 	if err != nil {
 		return nil, fmt.Errorf("HTTP request %s error: %s", drugInfo.Link, err)
@@ -169,21 +236,7 @@ func fetchDrug(drugInfo *DrugInfo) (*Drug, error) {
 		Instruction:  instruction}, nil
 }
 
-func checkFatalError(err error) {
-	if err != nil {
-		log.Fatal(err)
-	}
-}
-
-func checkError(err error) bool {
-	if err != nil {
-		log.Error(err)
-		return true
-	}
-	return false
-}
-
-func saveToCSV(drugsChan <-chan *Drug, fileName string) {
+func saveDrugsToCSV(drugsChan <-chan *Drug, fileName string) {
 	file, err := os.OpenFile(
 		fileName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.ModePerm)
 	checkFatalError(err)
@@ -205,7 +258,7 @@ func saveToCSV(drugsChan <-chan *Drug, fileName string) {
 	}
 }
 
-func saveToMSSQL(drugsChan <-chan *Drug, mssqlConnURL string) int {
+func saveDrugsToMSSQL(drugsChan <-chan *Drug, mssqlConnURL string) int {
 	db, err := sql.Open("sqlserver", mssqlConnURL)
 	checkFatalError(err)
 	defer db.Close()
@@ -253,7 +306,7 @@ func saveToMSSQL(drugsChan <-chan *Drug, mssqlConnURL string) int {
 	return totalCount
 }
 
-func scan(cnf Config) {
+func scanDrugs(cnf Config) {
 	// Extract root ATC links
 	log.Infof("Extract root ATC links from %s", tabletkiATCURL)
 
@@ -329,12 +382,12 @@ func scan(cnf Config) {
 	if cnf.Prod {
 		// Save drugs in MSSQL database
 		log.Info("Save drugs to MSSQL")
-		totalRowsSaved := saveToMSSQL(drugOutChanel, cnf.MSSQLConnURL)
+		totalRowsSaved := saveDrugsToMSSQL(drugOutChanel, cnf.MSSQLConnURL)
 		log.Infof("Saved %d drugs to MSSQL", totalRowsSaved)
 	} else {
 		// Save drugs in CSV file
 		log.Infof("Save drugs to CSV %s", cnf.CSVFileName)
-		saveToCSV(drugOutChanel, cnf.CSVFileName)
+		saveDrugsToCSV(drugOutChanel, cnf.CSVFileName)
 	}
 }
 
@@ -342,11 +395,11 @@ func main() {
 	start := time.Now()
 	cnf := getConfig()
 	initLogger(logLevel)
-	
+
 	flaggy.SetName("Tabletki.ua drugs scrapper")
 	flaggy.SetDescription(fmt.Sprintf(
-		"This programm extract and save information" + 
-		"about the drugs from the \"%s\" link.", tabletkiATCURL))
+		"This programm extract and save information"+
+			"about the drugs from the \"%s\" link.", tabletkiATCURL))
 	flaggy.SetVersion(version)
 
 	flaggy.Bool(&cnf.Prod, "", "prod", "Set PRODUCTION mode (save results to MSSQL DB)")
@@ -355,9 +408,14 @@ func main() {
 	flaggy.String(&cnf.MSSQLConnURL, "", "mssqlurl", "MSSQL database connection url")
 	flaggy.Parse()
 
-	log.Infof("Starting drugs scan (production: %t, workers: %d)", 
-		      cnf.Prod, cnf.WorkersNum)
-	scan(cnf)
+	log.Infof("Starting ATC classification scan (production: %t)", cnf.Prod)
+	fetchATCTree(&ATCTree{
+		Name: "АТХ (ATC) классификация",
+		Link: tabletkiATCURL})
+
+	log.Infof("Starting drugs scan (production: %t, workers: %d)",
+		cnf.Prod, cnf.WorkersNum)
+	scanDrugs(cnf)
 
 	log.Infof("Done in %s", time.Since(start))
 }
