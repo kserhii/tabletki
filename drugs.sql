@@ -1,3 +1,8 @@
+CREATE TABLE ATCTree
+(
+	Tree NVARCHAR(MAX) NOT NULL
+);
+
 CREATE TABLE Drugs
 (
     Name NVARCHAR(127) NOT NULL,
@@ -8,5 +13,5 @@ CREATE TABLE Drugs
 	PharmGroup NVARCHAR(255),
 	Registration NVARCHAR(127),
 	ATCCode NVARCHAR(1023),
-	Instruction NVARCHAR(MAX),
+	Instruction NVARCHAR(MAX)
 );

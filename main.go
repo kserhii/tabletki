@@ -129,6 +129,7 @@ func fetchATCTree(tree *ATCTree) error {
 
 	tree.Children = make([]*ATCTree, numOfChildren)
 	if numOfChildren == 0 {
+		fmt.Print("-")
 		return nil
 	}
 
@@ -159,15 +160,17 @@ func fetchATCTree(tree *ATCTree) error {
 		}
 	}
 
+	fmt.Print("\n|")
 	return nil
 }
 
 func scanATCTree(cnf Config) {
 	tree := &ATCTree{
 		Name: "АТХ (ATC) классификация",
-		Link: tabletkiATCURL} 
-
-		// Load ATCTree
+		Link: tabletkiATCURL,
+		Children: make([]*ATCTree, 0)} 
+	
+	// Load ATCTree
 	log.Info("Load ATC tree recursively")
 	err := fetchATCTree(tree)
 	checkFatalError(err)
@@ -175,6 +178,7 @@ func scanATCTree(cnf Config) {
 	// Convert ATCTree names to json tree
 	log.Info("Convert ATC tree to JSON")
 	treeJSON, err := json.MarshalIndent(tree, "", "  ")
+	checkFatalError(err)
 
 	// Save results
 	if cnf.Prod {
@@ -186,11 +190,12 @@ func scanATCTree(cnf Config) {
 	
 		err = db.Ping()
 		checkFatalError(err)
-		_, err = db.Exec("USE drugs")
-		checkFatalError(err)
 		_, err = db.Exec("TRUNCATE TABLE ATCTree")
 		checkFatalError(err)
-	
+
+		_, err = db.Exec("INSERT INTO ATCTree VALUES (@p1)", string(treeJSON))
+		checkFatalError(err)
+
 	} else {
 		// Save ATC tree to JSON file
 		log.Infof("Save ATC tree to JSON %s", cnf.JSONFileName)
@@ -198,6 +203,7 @@ func scanATCTree(cnf Config) {
 			cnf.JSONFileName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0664)
 		checkFatalError(err)
 		defer file.Close()
+
 		file.Write(treeJSON)
 	}
 }
@@ -308,8 +314,6 @@ func saveDrugsToMSSQL(drugsChan <-chan *Drug, mssqlConnURL string) int {
 
 	err = db.Ping()
 	checkFatalError(err)
-	_, err = db.Exec("USE drugs")
-	checkFatalError(err)
 	_, err = db.Exec("TRUNCATE TABLE Drugs")
 	checkFatalError(err)
 
@@ -318,6 +322,7 @@ func saveDrugsToMSSQL(drugsChan <-chan *Drug, mssqlConnURL string) int {
 
 	batchCount := 0
 	tx, err := db.Begin()
+	checkFatalError(err)
 
 	for drug := range drugsChan {
 		_, err = tx.Exec(insertQuery,
