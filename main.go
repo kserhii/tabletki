@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -54,9 +55,9 @@ func initLogger(level string) {
 
 // ATCTree is the tree of ATC classification from the site
 type ATCTree struct {
-	Name     string
-	Link     string
-	Children []*ATCTree
+	Name     string		`json:"name"`
+	Link     string		`json:"-"`
+	Children []*ATCTree	`json:"children"`
 }
 
 // DrugInfo contains drug name and link to the drug page
@@ -161,14 +162,19 @@ func fetchATCTree(tree *ATCTree) error {
 	return nil
 }
 
-func scanATCTree(tree *ATCTree, cnf Config) {
-	// Load ATCTree
+func scanATCTree(cnf Config) {
+	tree := &ATCTree{
+		Name: "АТХ (ATC) классификация",
+		Link: tabletkiATCURL} 
+
+		// Load ATCTree
 	log.Info("Load ATC tree recursively")
 	err := fetchATCTree(tree)
 	checkFatalError(err)
 
 	// Convert ATCTree names to json tree
 	log.Info("Convert ATC tree to JSON")
+	treeJSON, err := json.MarshalIndent(tree, "", "  ")
 
 	// Save results
 	if cnf.Prod {
@@ -189,9 +195,10 @@ func scanATCTree(tree *ATCTree, cnf Config) {
 		// Save ATC tree to JSON file
 		log.Infof("Save ATC tree to JSON %s", cnf.JSONFileName)
 		file, err := os.OpenFile(
-			cnf.JSONFileName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.ModePerm)
+			cnf.JSONFileName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0664)
 		checkFatalError(err)
 		defer file.Close()
+		file.Write(treeJSON)
 	}
 }
 
@@ -274,7 +281,7 @@ func fetchDrug(drugInfo *DrugInfo) (*Drug, error) {
 
 func saveDrugsToCSV(drugsChan <-chan *Drug, fileName string) {
 	file, err := os.OpenFile(
-		fileName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.ModePerm)
+		fileName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0664)
 	checkFatalError(err)
 	defer file.Close()
 
@@ -444,10 +451,7 @@ func main() {
 	flaggy.Parse()
 
 	log.Infof("Starting ATC classification scan (production: %t)", cnf.Prod)
-	tree := &ATCTree{
-		Name: "АТХ (ATC) классификация",
-		Link: tabletkiATCURL} 
-	scanATCTree(tree, cnf)
+	scanATCTree(cnf)
 
 	log.Infof("Starting drugs scan (production: %t, workers: %d)",
 		cnf.Prod, cnf.WorkersNum)
