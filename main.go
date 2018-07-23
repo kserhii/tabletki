@@ -55,9 +55,9 @@ func initLogger(level string) {
 
 // ATCTree is the tree of ATC classification from the site
 type ATCTree struct {
-	Name     string		`json:"name"`
-	Link     string		`json:"-"`
-	Children []*ATCTree	`json:"children"`
+	Name     string     `json:"name"`
+	Link     string     `json:"-"`
+	Children []*ATCTree `json:"children"`
 }
 
 // DrugInfo contains drug name and link to the drug page
@@ -166,10 +166,10 @@ func fetchATCTree(tree *ATCTree) error {
 
 func scanATCTree(cnf Config) {
 	tree := &ATCTree{
-		Name: "АТХ (ATC) классификация",
-		Link: tabletkiATCURL,
-		Children: make([]*ATCTree, 0)} 
-	
+		Name:     "АТХ (ATC) классификация",
+		Link:     tabletkiATCURL,
+		Children: make([]*ATCTree, 0)}
+
 	// Load ATCTree
 	log.Info("Load ATC tree recursively")
 	err := fetchATCTree(tree)
@@ -187,7 +187,7 @@ func scanATCTree(cnf Config) {
 		db, err := sql.Open("sqlserver", cnf.MSSQLConnURL)
 		checkFatalError(err)
 		defer db.Close()
-	
+
 		err = db.Ping()
 		checkFatalError(err)
 		_, err = db.Exec("TRUNCATE TABLE ATCTree")
@@ -444,8 +444,9 @@ func main() {
 
 	flaggy.SetName("Tabletki.ua drugs scrapper")
 	flaggy.SetDescription(fmt.Sprintf(
-		"This programm extract and save information"+
-			"about the drugs from the \"%s\" link.", tabletkiATCURL))
+		"This programm extract and save information "+
+			"about the drugs and ATC classification "+
+			"from the \"%s\" link.", tabletkiATCURL))
 	flaggy.SetVersion(version)
 
 	flaggy.Bool(&cnf.Prod, "", "prod", "Set PRODUCTION mode (save results to MSSQL DB)")
