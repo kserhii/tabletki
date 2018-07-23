@@ -442,7 +442,7 @@ func main() {
 	cnf := getConfig()
 	initLogger(logLevel)
 
-	flaggy.SetName("Tabletki.ua drugs scrapper")
+	flaggy.SetName("tabletki")
 	flaggy.SetDescription(fmt.Sprintf(
 		"This programm extract and save information "+
 			"about the drugs and ATC classification "+
@@ -454,14 +454,23 @@ func main() {
 	flaggy.String(&cnf.CSVFileName, "", "csvfile", "Name of CSV file where save drugs in debug mode")
 	flaggy.String(&cnf.JSONFileName, "", "jsonfile", "Name of JSON file where save ATC tree in debug mode")
 	flaggy.String(&cnf.MSSQLConnURL, "", "mssqlurl", "MSSQL database connection url")
+	
+	atctreeSubCmd := flaggy.NewSubcommand("atctree")
+	flaggy.AttachSubcommand(atctreeSubCmd, 1)
+	drugsSubCmd := flaggy.NewSubcommand("drugs")
+	flaggy.AttachSubcommand(drugsSubCmd, 1)
+
 	flaggy.Parse()
 
-	log.Infof("Starting ATC classification scan (production: %t)", cnf.Prod)
-	scanATCTree(cnf)
-
-	log.Infof("Starting drugs scan (production: %t, workers: %d)",
-		cnf.Prod, cnf.WorkersNum)
-	scanDrugs(cnf)
+	if atctreeSubCmd.Used {
+		log.Infof("Starting ATC classification scan (production: %t)", cnf.Prod)
+		scanATCTree(cnf)
+	} else if drugsSubCmd.Used {
+		log.Infof("Starting drugs scan (production: %t, workers: %d)", cnf.Prod, cnf.WorkersNum)
+		scanDrugs(cnf)
+	} else {
+		log.Info("No subcommand selected!")
+	}
 
 	log.Infof("Done in %s", time.Since(start))
 }
