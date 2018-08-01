@@ -17,8 +17,10 @@ import (
 	"golang.org/x/net/html"
 )
 
+// ----- Config -----
+
 const (
-	version        = "1.0.0"
+	version        = "1.1.0"
 	tabletkiATCURL = "https://tabletki.ua/atc/"
 	logLevel       = "INFO"
 )
@@ -41,6 +43,8 @@ func getConfig() Config {
 		MSSQLConnURL: "sqlserver://user:pass@localhost:1433?database=drugs"}
 }
 
+// ----- Logger -----
+
 var log *logging.Logger
 
 func initLogger(level string) {
@@ -53,47 +57,7 @@ func initLogger(level string) {
 	logging.SetLevel(logLev, module)
 }
 
-// ATCTree is the tree of ATC classification from the site
-type ATCTree struct {
-	Name     string     `json:"name"`
-	Link     string     `json:"-"`
-	Children []*ATCTree `json:"children"`
-}
-
-// DrugInfo contains drug name and link to the drug page
-type DrugInfo struct {
-	Name string
-	Link string
-}
-
-// Drug struct contains all nececarry information about the drug
-type Drug struct {
-	Name         string
-	Link         string
-	Dosage       string
-	Manufacture  string
-	INN          string
-	PharmGroup   string
-	Registration string
-	ATCCode      string
-	Instruction  string
-}
-
-var drugFields = []string{
-	"Name", "Link", "Dosage", "Manufacture", "INN",
-	"PharmGroup", "Registration", "ATCCode", "Instruction"}
-
-// Fields return list of the Drug field names
-func (drug *Drug) Fields() []string {
-	return drugFields
-}
-
-// Values return list of the Drug field values
-func (drug *Drug) Values() []string {
-	return []string{
-		drug.Name, drug.Link, drug.Dosage, drug.Manufacture, drug.INN,
-		drug.PharmGroup, drug.Registration, drug.ATCCode, drug.Instruction}
-}
+// ----- Helpers -----
 
 func checkFatalError(err error) {
 	if err != nil {
@@ -115,6 +79,15 @@ func htmlText(baseNode *html.Node, xpath string) string {
 		return ""
 	}
 	return strings.TrimSpace(htmlquery.InnerText(node))
+}
+
+// ----- ATC Tree -----
+
+// ATCTree is the tree of ATC classification from the site
+type ATCTree struct {
+	Name     string     `json:"name"`
+	Link     string     `json:"-"`
+	Children []*ATCTree `json:"children"`
 }
 
 func fetchATCTree(tree *ATCTree) error {
@@ -206,6 +179,43 @@ func scanATCTree(cnf Config) {
 
 		file.Write(treeJSON)
 	}
+}
+
+// ----- Drugs -----
+
+// DrugInfo contains drug name and link to the drug page
+type DrugInfo struct {
+	Name string
+	Link string
+}
+
+// Drug struct contains all nececarry information about the drug
+type Drug struct {
+	Name         string
+	Link         string
+	Dosage       string
+	Manufacture  string
+	INN          string
+	PharmGroup   string
+	Registration string
+	ATCCode      string
+	Instruction  string
+}
+
+var drugFields = []string{
+	"Name", "Link", "Dosage", "Manufacture", "INN",
+	"PharmGroup", "Registration", "ATCCode", "Instruction"}
+
+// Fields return list of the Drug field names
+func (drug *Drug) Fields() []string {
+	return drugFields
+}
+
+// Values return list of the Drug field values
+func (drug *Drug) Values() []string {
+	return []string{
+		drug.Name, drug.Link, drug.Dosage, drug.Manufacture, drug.INN,
+		drug.PharmGroup, drug.Registration, drug.ATCCode, drug.Instruction}
 }
 
 func fetchATCLinks(url string) ([]string, error) {
@@ -437,6 +447,8 @@ func scanDrugs(cnf Config) {
 	}
 }
 
+// ----- Main -----
+
 func main() {
 	start := time.Now()
 	cnf := getConfig()
@@ -454,7 +466,7 @@ func main() {
 	flaggy.String(&cnf.CSVFileName, "", "csvfile", "Name of CSV file where save drugs in debug mode")
 	flaggy.String(&cnf.JSONFileName, "", "jsonfile", "Name of JSON file where save ATC tree in debug mode")
 	flaggy.String(&cnf.MSSQLConnURL, "", "mssqlurl", "MSSQL database connection url")
-	
+
 	atctreeSubCmd := flaggy.NewSubcommand("atctree")
 	flaggy.AttachSubcommand(atctreeSubCmd, 1)
 	drugsSubCmd := flaggy.NewSubcommand("drugs")
