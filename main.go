@@ -183,12 +183,6 @@ func scanATCTree(cnf Config) {
 
 // ----- Drugs -----
 
-// DrugInfo contains drug name and link to the drug page
-type DrugInfo struct {
-	Name string
-	Link string
-}
-
 // Drug struct contains all nececarry information about the drug
 type Drug struct {
 	Name         string
@@ -202,23 +196,7 @@ type Drug struct {
 	Instruction  string
 }
 
-var drugFields = []string{
-	"Name", "Link", "Dosage", "Manufacture", "INN",
-	"PharmGroup", "Registration", "ATCCode", "Instruction"}
-
-// Fields return list of the Drug field names
-func (drug *Drug) Fields() []string {
-	return drugFields
-}
-
-// Values return list of the Drug field values
-func (drug *Drug) Values() []string {
-	return []string{
-		drug.Name, drug.Link, drug.Dosage, drug.Manufacture, drug.INN,
-		drug.PharmGroup, drug.Registration, drug.ATCCode, drug.Instruction}
-}
-
-func fetchATCLinks(url string) ([]string, error) {
+func fetchDrugATCLinks(url string) ([]string, error) {
 	doc, err := htmlquery.LoadURL(url)
 	if err != nil {
 		return []string{}, fmt.Errorf("HTTP request %s error: %s", url, err)
@@ -233,42 +211,71 @@ func fetchATCLinks(url string) ([]string, error) {
 	return atcLinks, nil
 }
 
-func fetchDrugLinks(url string) ([]*DrugInfo, error) {
+func fetchDrugBaseLinks(url string) ([]string, error) {
 	doc, err := htmlquery.LoadURL(url)
 	if err != nil {
-		return []*DrugInfo{}, fmt.Errorf("HTTP request %s error: %s", url, err)
+		return []string{}, fmt.Errorf("HTTP request %s error: %s", url, err)
 	}
 
-	drugNodes := htmlquery.Find(doc, `//div[contains(@id, "GoodsListPanel")]/div/a`)
+	drugBaseLinkNodes := htmlquery.Find(doc, `//div[contains(@id, "GoodsListPanel")]/div/a`)
 
-	drugsInfo := make([]*DrugInfo, len(drugNodes))
-	for i, drugNode := range drugNodes {
-		drugsInfo[i] = &DrugInfo{
-			Name: htmlquery.SelectAttr(drugNode, "title"),
-			Link: "https:" + htmlquery.SelectAttr(drugNode, "href")}
+	drugBaseLinks := make([]string, len(drugBaseLinkNodes))
+	for i, linkNode := range drugBaseLinkNodes {
+		drugBaseLinks[i] = "https:" + htmlquery.SelectAttr(linkNode, "href")
 	}
 
-	return drugsInfo, nil
+	return drugBaseLinks, nil
 }
 
-func fetchDrug(drugInfo *DrugInfo) (*Drug, error) {
-	log.Debugf("=> %s (%s)", drugInfo.Name, drugInfo.Link)
-	doc, err := htmlquery.LoadURL(drugInfo.Link)
+func fetchDrugLinks(url string) ([]string, error) {
+	doc, err := htmlquery.LoadURL(url)
 	if err != nil {
-		return nil, fmt.Errorf("HTTP request %s error: %s", drugInfo.Link, err)
+		return []string{}, fmt.Errorf("HTTP request %s error: %s", url, err)
 	}
 
-	infoTable := htmlquery.FindOne(doc, `//div[contains(@id, "InstructionPanel")]/table/tbody`)
-	if infoTable == nil {
-		return &Drug{
-			Name: drugInfo.Name,
-			Link: drugInfo.Link}, nil
+	drugLinkNodes := htmlquery.Find(doc, `//div[@class="search-control-panel"]/div/div/ul/li/a`)
+	if len(drugLinkNodes) < 2 {
+		log.Warningf("Drug links for %s not found", url)
+		return []string{}, nil
 	}
+
+	// Skip first link "Все дозировки"
+	if htmlquery.InnerText(drugLinkNodes[0]) != "Все дозировки" {
+		log.Warningf(
+			"Unexpected first link %s for %s", 
+			htmlquery.SelectAttr(drugLinkNodes[0], "href"), url)
+	}
+	drugLinkNodes = drugLinkNodes[1:]
+
+	drugLinks := make([]string, len(drugLinkNodes))
+	for i, linkNode := range drugLinkNodes {
+		drugLinks[i] = "https:" + htmlquery.SelectAttr(linkNode, "href")
+	}
+
+	return drugLinks, nil
+}
+
+func fetchDrug(url string) (Drug, error) {
+	log.Debugf("=> %s", url)
+	doc, err := htmlquery.LoadURL(url)
+	if err != nil {
+		return Drug{}, fmt.Errorf("HTTP request %s error: %s", url, err)
+	}
+
+	name := htmlText(doc, `//div[@class="header-panel"]/h1`)
 
 	instruction := htmlText(doc, `//div[@itemprop="description"]`)
 	instruction = strings.Replace(instruction, "Перевести на русский язык:", "", 1)
 	instruction = strings.Replace(instruction, "Перевести", "", 1)
 	instruction = strings.TrimSpace(instruction)
+
+	infoTable := htmlquery.FindOne(doc, `//div[contains(@id, "InstructionPanel")]/table/tbody`)
+	if infoTable == nil {
+		return Drug{
+			Name:        name,
+			Link:        url,
+			Instruction: instruction}, nil
+	}
 
 	dosage := htmlText(infoTable, `./tr/td[contains(text(), "Дозировка")]/following-sibling::td`)
 	manufacture := htmlText(infoTable, `./tr/td[contains(text(), "Производитель")]/following-sibling::td`)
@@ -283,9 +290,9 @@ func fetchDrug(drugInfo *DrugInfo) (*Drug, error) {
 	}
 	atcCode := strings.Join(codes, "\n")
 
-	return &Drug{
-		Name:         drugInfo.Name,
-		Link:         drugInfo.Link,
+	return Drug{
+		Name:         name,
+		Link:         url,
 		Dosage:       dosage,
 		Manufacture:  manufacture,
 		INN:          inn,
@@ -295,7 +302,7 @@ func fetchDrug(drugInfo *DrugInfo) (*Drug, error) {
 		Instruction:  instruction}, nil
 }
 
-func saveDrugsToCSV(drugsChan <-chan *Drug, fileName string) {
+func saveDrugsToCSV(drugsChan <-chan Drug, fileName string) {
 	file, err := os.OpenFile(
 		fileName, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0664)
 	checkFatalError(err)
@@ -305,19 +312,32 @@ func saveDrugsToCSV(drugsChan <-chan *Drug, fileName string) {
 	defer writer.Flush()
 
 	// Skip Instruction because it too long
-	rowLen := len(drugFields) - 1
 
 	// Write CSV headers
-	err = writer.Write(drugFields[:rowLen])
+	headers := []string{
+		"Name", "Link", "Dosage", "Manufacture",
+		"INN", "PharmGroup", "Registration", "ATCCode"}
+	err = writer.Write(headers)
 	checkFatalError(err)
 
+	num := 0
 	for drug := range drugsChan {
-		err = writer.Write(drug.Values()[:rowLen])
+		row := []string{
+			drug.Name, drug.Link, drug.Dosage, drug.Manufacture,
+			drug.INN, drug.PharmGroup, drug.Registration, drug.ATCCode}
+		err = writer.Write(row)
 		checkFatalError(err)
+
+		num++
+		if num%100 == 0 {
+			log.Infof("Scanned %d drugs", num)
+		}
 	}
+
+	log.Infof("Scanned %d drugs", num)
 }
 
-func saveDrugsToMSSQL(drugsChan <-chan *Drug, mssqlConnURL string) int {
+func saveDrugsToMSSQL(drugsChan <-chan Drug, mssqlConnURL string) int {
 	db, err := sql.Open("sqlserver", mssqlConnURL)
 	checkFatalError(err)
 	defer db.Close()
@@ -334,6 +354,7 @@ func saveDrugsToMSSQL(drugsChan <-chan *Drug, mssqlConnURL string) int {
 	tx, err := db.Begin()
 	checkFatalError(err)
 
+	num := 0
 	for drug := range drugsChan {
 		_, err = tx.Exec(insertQuery,
 			drug.Name, drug.Link, drug.Dosage, drug.Manufacture, drug.INN,
@@ -351,6 +372,11 @@ func saveDrugsToMSSQL(drugsChan <-chan *Drug, mssqlConnURL string) int {
 			batchCount = 0
 			tx, err = db.Begin()
 		}
+
+		num++
+		if num%100 == 0 {
+			log.Infof("Scanned %d drugs", num)
+		}
 	}
 
 	if batchCount > 0 {
@@ -359,91 +385,86 @@ func saveDrugsToMSSQL(drugsChan <-chan *Drug, mssqlConnURL string) int {
 		totalCount += batchCount
 	}
 
+	log.Infof("Scanned %d drugs", num)
 	return totalCount
 }
 
-func scanDrugs(cnf Config) {
-	// Extract root ATC links
-	log.Infof("Extract root ATC links from %s", tabletkiATCURL)
+func linksMultiFetcher(
+	inChan chan string, workersNum int, 
+	fetcher func(string) ([]string, error)) chan string {
+	
+	var wg sync.WaitGroup
+	outChan := make(chan string)
 
-	links, err := fetchATCLinks(tabletkiATCURL)
-	checkFatalError(err)
-	log.Infof("Collected %d ATC links", len(links))
-
-	// Extract drug names and links
-	drugInChanel := make(chan *DrugInfo)
+	for w := 0; w < workersNum; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for link := range inChan {
+				subLinks, err := fetcher(link)
+				if checkError(err) {
+					continue
+				}
+				for _, subLink := range subLinks {
+					outChan <- subLink
+				}
+			}					
+		}()
+	}
 
 	go func() {
-		defer close(drugInChanel)
-
-		for _, link := range links {
-			log.Infof("Loading ATC page %s", link)
-			drugInfos, err := fetchDrugLinks(link)
-			if checkError(err) {
-				continue
-			}
-
-			log.Infof("Collected %d drugs names from %s", len(drugInfos), link)
-			for _, drugInfo := range drugInfos {
-				drugInChanel <- drugInfo
-			}
-		}
-	}()
-
-	// Extract drug information
-	drugOutChanel := make(chan *Drug)
-
-	go func() {
-		var wg sync.WaitGroup
-		semaphore := make(chan struct{}, cnf.WorkersNum)
-		defer close(semaphore)
-
-		defer close(drugOutChanel)
-
-		log.Info("Loading drug pages")
-
-		counter := 0
-		for drugInfo := range drugInChanel {
-			wg.Add(1)
-			semaphore <- struct{}{}
-			counter++
-
-			go func(di *DrugInfo, num int) {
-				defer func() {
-					<-semaphore
-					wg.Done()
-				}()
-
-				log.Debugf("=> %s (%s)", di.Name, di.Link)
-				drug, err := fetchDrug(di)
-				if err != nil {
-					log.Errorf(
-						"Error loading drug \"%s\" (%s): %s",
-						di.Name, di.Link, err)
-					return
-				}
-
-				if num%100 == 0 {
-					log.Infof("Scanned %d drugs", num)
-				}
-
-				drugOutChanel <- drug
-			}(drugInfo, counter)
-		}
-
 		wg.Wait()
-		log.Infof("Scanned %d drugs", counter)
+		close(outChan)
 	}()
 
+	return outChan
+}
+
+func scanDrugs(cnf Config) {
+	log.Infof("Start drugs scrapping from %s", tabletkiATCURL)
+
+	rootCh := make(chan string, 1)
+	rootCh <- tabletkiATCURL
+	close(rootCh)
+
+	// Extract drug links
+	atcLinksCh := linksMultiFetcher(rootCh, 1, fetchDrugATCLinks)
+	baseLinksCh := linksMultiFetcher(atcLinksCh, 1, fetchDrugBaseLinks)
+	drugLinksCh := linksMultiFetcher(baseLinksCh, cnf.WorkersNum, fetchDrugLinks)
+
+	// Fetch drug info 
+	var wg sync.WaitGroup
+	drugsCh := make(chan Drug)
+
+	for w := 0; w < cnf.WorkersNum; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for link := range drugLinksCh {
+				drug, err := fetchDrug(link)
+				if checkError(err) {
+					continue
+				}
+				drugsCh <- drug
+			}					
+		}()
+	}
+
+	go func() {
+		wg.Wait()
+		close(drugsCh)
+	}()
+
+	// Save scan results
 	if cnf.Prod {
 		// Save drugs to MSSQL database
 		log.Info("Save drugs to MSSQL")
-		totalRowsSaved := saveDrugsToMSSQL(drugOutChanel, cnf.MSSQLConnURL)
+		totalRowsSaved := saveDrugsToMSSQL(drugsCh, cnf.MSSQLConnURL)
 		log.Infof("Saved %d drugs to MSSQL", totalRowsSaved)
 	} else {
 		// Save drugs to CSV file
 		log.Infof("Save drugs to CSV %s", cnf.CSVFileName)
-		saveDrugsToCSV(drugOutChanel, cnf.CSVFileName)
+		saveDrugsToCSV(drugsCh, cnf.CSVFileName)
 	}
 }
 
